@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,25 +14,32 @@ import (
 
 func main() {
 	// parse flags
-	host := flag.String("host", "", "Host address to grab the certs from. Hostname or full `URL`")
+	// host := flag.String("host", "", "Host address to grab the certs from. Hostname or full `URL`")
+	outfile := flag.Bool("w", false, "Write certs to a file instead of stdout.")
 	flag.Parse()
-	if *host == "" {
+
+	// The only positional argument should be a url to a host.
+	if flag.NArg() != 1 {
 		flag.Usage()
-		os.Exit(0)
+		fmt.Println("Too many args passed in.")
+		os.Exit(1)
 	}
+	host := fmt.Sprint(flag.Arg(0))
 
 	// handle proto
-	if !strings.HasPrefix(*host, "https://") {
-		if strings.HasPrefix(*host, "http://") {
-			log.Fatal("Cannot use http protocol to retrieve certs. Did you mean to use https?")
+	if !strings.HasPrefix(host, "https://") {
+		if strings.HasPrefix(host, "http://") {
+			fmt.Println("Cannot use http protocol to retrieve certs. Did you mean to use https?")
+			os.Exit(1)
 		}
-		*host = "https://" + *host
+		host = "https://" + host
 	}
 
 	// Parse the url and check for errors
-	hostURL, err := url.Parse(*host)
+	hostURL, err := url.Parse(host)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println("Error parsing url")
+		panic(err)
 	}
 
 	// Handle port (hostURL.Port() returns a string)
@@ -44,7 +50,7 @@ func main() {
 	default:
 		port, err = strconv.Atoi(hostURL.Port())
 		if err != nil {
-			log.Fatal("Could not parse port. Please check the url.")
+			panic("Could not parse port. Please check the url.")
 		}
 	}
 
@@ -72,42 +78,50 @@ func main() {
 	}
 
 	// Connect to the host
-	fmt.Printf("Grepping %s for CA certificates..\n", hostURL.Hostname())
+	if *outfile {
+		fmt.Printf("Grepping %s for CA certificates..\n", hostURL.Hostname())
+	}
 	client := &http.Client{
 		Transport: tr,
 	}
 	resp, err := client.Get(hosturl)
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		fmt.Println("Error connecting to host.")
+		fmt.Print(err)
+		os.Exit(1)
 	}
 
-	// // print the certs to std.out in default DER format
-	// fname := fmt.Sprintf("%s.ca.crt", hostURL.Hostname())
-	// f, err := os.OpenFile(fname, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	// if err != nil {
-	// 	log.Fatalf("could not open %s for writing", fname)
-	// }
-	// defer f.Close()
-
+	// parse the certs
 	certs := resp.TLS.PeerCertificates
 	var crtcount int
 	for _, cert := range certs {
 		if cert.IsCA {
 			crtcount++
-			filename := fmt.Sprintf("%s.ca.%d.crt", hostURL.Hostname(), crtcount)
-			fmt.Printf("  exporting CA cert to %s.\n", filename)
-			f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-			if err != nil {
-				log.Fatalf("could not open %s for writing", filename)
-			}
-			defer f.Close()
-			_, err = f.Write(cert.Raw)
-			if err != nil {
-				log.Fatal("Error writing certs to disk.")
+			if *outfile {
+				// write each cert to a file.
+				// TODO: see if these can be written to one file.
+				filename := fmt.Sprintf("%s.ca.%d.crt", hostURL.Hostname(), crtcount)
+				fmt.Printf("  exporting CA cert to %s.\n", filename)
+				f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+				if err != nil {
+					fmt.Printf("could not open %s for writing", filename)
+					os.Exit(1)
+				}
+				defer f.Close()
+				_, err = f.Write(cert.Raw)
+				if err != nil {
+					panic("Error writing certs to disk.")
+				}
+			} else {
+				// write to stdout
+				_, err := os.Stdout.Write(cert.Raw)
+				if err != nil {
+					panic("Could not write to stdout")
+				}
 			}
 		}
 	}
-
-	fmt.Println("Done.")
-
+	if *outfile {
+		fmt.Println("Done.")
+	}
 }
